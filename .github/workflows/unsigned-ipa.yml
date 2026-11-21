@@ -23,7 +23,7 @@ jobs:
           xcodebuild -version
           [[ "$(xcrun --sdk iphoneos --show-sdk-version)" == 27.1 ]]
           [[ "$(xcrun --sdk iphonesimulator --show-sdk-version)" == 27.1 ]]
-          brew install xcodegen
+          brew install xcodegen ripgrep
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal \
             --target aarch64-apple-ios,aarch64-apple-ios-sim
 
