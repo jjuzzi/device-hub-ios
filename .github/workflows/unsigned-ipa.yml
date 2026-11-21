@@ -1,0 +1,72 @@
+name: Build unsigned Device Hub IPA
+
+on:
+  push:
+    branches: [build/unsigned-device-hub]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      IPHONEOS_DEPLOYMENT_TARGET: "27.0"
+      RUSTUP_TOOLCHAIN: "1.95.0"
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up build tools
+        run: |
+          xcodebuild -version
+          [[ "$(xcrun --sdk iphoneos --show-sdk-version)" == 27.1 ]]
+          [[ "$(xcrun --sdk iphonesimulator --show-sdk-version)" == 27.1 ]]
+          brew install xcodegen
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal \
+            --target aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - name: Build Rust XCFramework
+        run: |
+          python3 BuildSupport/bootstrap_idevice.py
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/devicehub-cargo"
+          SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)" \
+            cargo build --manifest-path Rust/Cargo.toml --package device-hub-ffi \
+            --locked --release --target aarch64-apple-ios
+          SDKROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+            cargo build --manifest-path Rust/Cargo.toml --package device-hub-ffi \
+            --locked --release --target aarch64-apple-ios-sim
+          mkdir -p Rust/Artifacts
+          xcodebuild -create-xcframework \
+            -library "$CARGO_TARGET_DIR/aarch64-apple-ios/release/libdevice_hub_ffi.a" \
+            -headers Rust/DeviceHubFFI/include \
+            -library "$CARGO_TARGET_DIR/aarch64-apple-ios-sim/release/libdevice_hub_ffi.a" \
+            -headers Rust/DeviceHubFFI/include \
+            -output Rust/Artifacts/DeviceHubFFI.xcframework
+          bash Scripts/verify-protocol-xcframework.sh
+
+      - name: Build and package the device app
+        run: |
+          xcodegen generate
+          xcodebuild build -project DeviceHub.xcodeproj -scheme DeviceHub \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/devicehub-derived" \
+            -skipMacroValidation CODE_SIGNING_ALLOWED=NO
+          stage="$RUNNER_TEMP/devicehub-ipa"
+          mkdir -p "$stage/Payload"
+          ditto "$RUNNER_TEMP/devicehub-derived/Build/Products/Release-iphoneos/DeviceHub.app" \
+            "$stage/Payload/DeviceHub.app"
+          xcrun vtool -show-build "$stage/Payload/DeviceHub.app/DeviceHub" | awk '
+            $1 == "platform" && $2 == "IOS" { device = 1 }
+            END { exit !device }
+          '
+          cd "$stage"
+          zip -qr DeviceHub-unsigned.ipa Payload
+          unzip -tq DeviceHub-unsigned.ipa
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: DeviceHub-unsigned
+          path: ${{ runner.temp }}/devicehub-ipa/DeviceHub-unsigned.ipa
+          if-no-files-found: error
